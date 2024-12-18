@@ -150,7 +150,7 @@ void gic_init()
     if (get_cpuid() == 0) {
         gicd_init();
         its_init(); /*Alloc tables and map lpis*/
-        printf("Baremetal: GIC init\n");
+        //printf("Gic initializated\n");
     }
 
 }
@@ -159,8 +159,6 @@ void gic_handle()
 {
     unsigned long ack = sysreg_icc_iar1_el1_read();
     unsigned long id = ack & ((1UL << 24) -1);
-
-    printf("IRQ received with id %d\n",id);
 
     if (id >= 1022 && id != 8192) return;
 

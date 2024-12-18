@@ -15,6 +15,10 @@ void irq_enable(unsigned id) {
    }
 }
 
+void irq_disable(unsigned id) {
+    gic_set_enable(id, false); 
+}
+
 void irq_set_prio(unsigned id, unsigned prio){
     gic_set_prio(id, (uint8_t) prio);
 }

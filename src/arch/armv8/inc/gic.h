@@ -388,6 +388,7 @@ typedef struct gits_hw {
 #define GITS_BASER_INNERCACHE_OFF           (59)
 #define GITS_BASER_InnerShareable           (1ULL << GITS_BASER_SHAREABILITY_OFF)
 #define GITS_BASER_RaWaWb                   (7ULL << GITS_BASER_INNERCACHE_OFF)
+#define GITS_BASER_NonCache                 (1ULL << GITS_BASER_INNERCACHE_OFF)
 #define GITS_BASER_VAL_BIT                  (1ULL << 63)
 
 #define GICR_PROPBASER_PHY_OFF                  (12)
@@ -396,6 +397,7 @@ typedef struct gits_hw {
 #define GICR_PROPBASER_INNERCACHE_OFF           (7)
 #define GICR_PROPBASER_InnerShareable           (1ULL << GICR_PROPBASER_SHAREABILITY_OFF)
 #define GICR_PROPBASER_RaWaWb                   (7ULL << GICR_PROPBASER_INNERCACHE_OFF)
+#define GICR_PROPBASER_NonCache                 (1ULL << GICR_PROPBASER_INNERCACHE_OFF)
 
 #define GITS_BASER_VALID_BIT            (1ULL << 63)
 #define GITS_BASER_PHY_ADDR_OFF         (12)
@@ -422,4 +424,12 @@ typedef struct gits_hw {
 
 int its_init();
 void its_trigger_lpi();
+uint64_t get_cqueue();
+
+
+/*PMU*/
+extern volatile uint64_t prev_timer_val;
+
+uint64_t pmu_get_cycle_count();
+
 #endif /* __GIC_H__ */

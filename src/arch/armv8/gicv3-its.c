@@ -25,6 +25,7 @@ volatile uint8_t itt_table[ITT_TABLE_SZ * PAGE_SZ] __attribute__((aligned(0x1000
 volatile uint8_t prop_table[PROP_SZ * PAGE_SZ] __attribute__((aligned(0x1000)));            //4KB-aligned physical addr
 volatile uint8_t pend_table[PROP_SZ * PAGE_SZ] __attribute__((aligned(0x10000)));           //64KB-aligned physical addr
 
+ struct its_cmd_block its_test;
 
 struct its {
     uint64_t cmd_queue;
@@ -45,6 +46,53 @@ struct its_cmd_block {
 	uint64_t cmd[4];
 };
 
+/*PMU operation*/
+volatile uint64_t prev_timer_val = 0;
+
+// Enable the PMU cycle counter and reset it to zero
+void pmu_start_cycle_count() {
+    asm volatile(
+        "msr PMCR_EL0, %0\n"  // Enable PMU and reset all counters
+        "msr PMCNTENSET_EL0, %1\n"  // Enable the cycle counter
+        "msr PMCCNTR_EL0, %2\n"  // Reset cycle counter to 0
+        :: "r"(1), "r"(1 << 31), "r"(0)
+    );
+}
+
+// void pmu_start_cycle_count() {
+//     asm volatile(
+//         "mrs x0, PMCR_EL0\n"       // Read current PMCR_EL0 value into x0
+//         "orr x0, x0, #1\n"         // Enable PMU (bit 0)
+//         "orr x0, x0, #(1 << 3)\n"  // Set divider by 64 (bit 3)
+//         "msr PMCR_EL0, x0\n"       // Write back to PMCR_EL0
+//         "msr PMCNTENSET_EL0, %0\n" // Enable the cycle counter
+//         "msr PMCCNTR_EL0, %1\n"    // Reset cycle counter to 0
+//         :: "r"(1 << 31), "r"(0)
+//         : "x0"
+//     );
+// }
+
+// Read the PMU cycle counter
+uint64_t pmu_get_cycle_count() {
+    uint64_t cycle_count;
+    asm volatile("mrs %0, PMCCNTR_EL0" : "=r"(cycle_count));
+    return cycle_count;
+}
+
+
+
+void flush_dcache_range(uintptr_t start, size_t length) {
+    uintptr_t addr = start & ~(64 - 1);  // Align start to cache line boundary
+    uintptr_t end = start + length;
+
+    while (addr < end) {
+        __asm__ volatile ("dc civac, %0" : : "r" (addr) : "memory");  // Clean and invalidate
+        addr += 64;
+    }
+    __asm__ volatile ("dsb sy");  // Ensure completion of the cache flush
+}
+
+
 /* Command Generation*/
 
 void its_send_mapc(){
@@ -59,6 +107,8 @@ void its_send_mapc(){
     its_cmd->cmd[2] = 0x8000000000000000;
     its_cmd->cmd[3] = 0x00;
 
+    flush_dcache_range(its.cmd_queue,0x10000);
+
 
 }
 
@@ -71,6 +121,8 @@ void its_send_invall(){
     its_cmd->cmd[1] = 0x00;
     its_cmd->cmd[2] = 0x00;
     its_cmd->cmd[3] = 0x00;
+
+    flush_dcache_range(its.cmd_queue,0x10000);
 
 }
 
@@ -85,6 +137,8 @@ void its_send_int(){
     its_cmd->cmd[2] = 0x00;
     its_cmd->cmd[3] = 0x00;
 
+    flush_dcache_range(its.cmd_queue,0x10000);
+
 }
 
 void its_send_sync(){
@@ -97,6 +151,8 @@ void its_send_sync(){
     its_cmd->cmd[1] = 0x00;
     its_cmd->cmd[2] = 0x00;
     its_cmd->cmd[3] = 0x00;
+
+    flush_dcache_range(its.cmd_queue,0x10000);
 
 }
 
@@ -112,6 +168,8 @@ void its_send_mapd(){
     its_cmd->cmd[2] = (1ULL << 63) | itt_addr;        /*Verify alignment*/
     its_cmd->cmd[3] = 0x00;
 
+    flush_dcache_range(its.cmd_queue,0x10000);
+
 }
 
 void its_send_mapti(){
@@ -123,8 +181,7 @@ void its_send_mapti(){
     its_cmd->cmd[2] = 0x00;                 /*Coll ID 0*/
     its_cmd->cmd[3] = 0x00;
 
-
-
+    flush_dcache_range(its.cmd_queue,0x10000);
 }
 
 void its_send_inv(){
@@ -136,6 +193,8 @@ void its_send_inv(){
     its_cmd->cmd[1] = 0x00;
     its_cmd->cmd[2] = 0x00;
     its_cmd->cmd[3] = 0x00;
+
+    flush_dcache_range(its.cmd_queue,0x10000);
 }
 
 
@@ -188,7 +247,7 @@ static int its_setup_lpi_prop_table(void){
 
     /*4KB alignment*/
 
-    propbaser = (uint64_t)its.prop_table | GICR_PROPBASER_InnerShareable | GICR_PROPBASER_RaWaWb | lpi_id_bits;
+    propbaser = (uint64_t)its.prop_table | GICR_PROPBASER_InnerShareable | GICR_PROPBASER_NonCache | lpi_id_bits;
 
     gicr_set_propbaser(propbaser,0);
 
@@ -199,7 +258,7 @@ static int its_setup_lpi_pend_table(void){
 
     /*Get the lpi_ID bits*/
 
-    uint64_t pendbaser = (uint64_t)its.pend_table | GICR_PROPBASER_InnerShareable | GICR_PROPBASER_RaWaWb;
+    uint64_t pendbaser = (uint64_t)its.pend_table | GICR_PROPBASER_InnerShareable | GICR_PROPBASER_NonCache;
 
     gicr_set_pendbaser(pendbaser,0);
 
@@ -219,7 +278,7 @@ static int allocate_lpi_tables(void){
 
 
     /* Set Command Queue Table*/
-    gits->CBASER = (uint64_t)its.cmd_queue | GITS_BASER_InnerShareable | GITS_BASER_RaWaWb | 0xf;
+    gits->CBASER = (uint64_t)its.cmd_queue | GITS_BASER_InnerShareable | GITS_BASER_NonCache | 0xf;
     gits->CBASER |= 1ULL << 63; //add valid
 
     /* Set BASER with deevice table addr*/
@@ -227,7 +286,7 @@ static int allocate_lpi_tables(void){
         //TODO -  Verify if flat tables are supported and manage Indirect bit
         if(bit_extract(gits->BASER[index], GITS_BASER_TYPE_OFF, GITS_BASER_TYPE_LEN) == 0x1) //Equal device table type
         {
-            gits->BASER[index] = (uint64_t)its.itt_table | GITS_BASER_InnerShareable | GITS_BASER_RaWaWb;
+            gits->BASER[index] = (uint64_t)its.itt_table | GITS_BASER_InnerShareable | GITS_BASER_NonCache | 0xe;
 
             gits->BASER[index] |= (1ULL << 63);  //set valid bit
         }
@@ -250,7 +309,7 @@ static int allocate_lpi_tables(void){
     /* Enable LPIs */
     gits->CTLR |= 0x1;
     uint32_t *ptr = 0x51a2C000;
-    *ptr = 0x2;
+    *ptr |= 0x2;
 }
 
 static void its_enable_lpi(uint64_t pINTID){
@@ -262,7 +321,7 @@ static void its_enable_lpi(uint64_t pINTID){
     /*base_addr + (N-8192)*/
     its.prop_table[pINTID - 8192] = val;
 
-    printf("Value of prop 0 is 0x%x\n",its.prop_table[0]);
+    //printf("Value of prop 0 is 0x%x\n",its.prop_table[0]);
 
 }
 
@@ -292,6 +351,8 @@ int its_device_init(){
     /*Sync LPI config tables in the redistributor*/
     its_enable_lpi(8192);
 
+    flush_dcache_range((uint64_t)its.prop_table,0x10000);
+
     its_send_inv();
     cmd_off += 0x20;
     its_send_sync();    //all the ITS operations globally observed
@@ -303,10 +364,16 @@ int its_device_init(){
 }
 
 void its_trigger_lpi(){
+
     cmd_off = gits->CWRITER;
     its_send_int();
     cmd_off += 0x20;
     gits->CWRITER = cmd_off;
+
+    // struct its_cmd_block *its_cmd = (struct its_cmd_block *)(its.cmd_queue + cmd_off - 0x20);
+
+    // its_test = *its_cmd;
+
 
     while(gits->CREADR != gits->CWRITER);
 
@@ -314,6 +381,13 @@ void its_trigger_lpi(){
     cmd_off += 0x20;
 
     gits->CWRITER = cmd_off;
+
+    /*Previous start point of PMU*/
+
+    /*Get the initial value of the PMU*/
+    pmu_start_cycle_count();
+    prev_timer_val = pmu_get_cycle_count(); //Used to calculate the number of cycles registered after the interrupt being triggered
+
 }
 
 int its_init(void){
@@ -327,11 +401,15 @@ int its_init(void){
     its.prop_table = prop_table;
     its.pend_table = pend_table;
 
-    printf("Value of cmd queue addr is 0x%lx",its.cmd_queue);
+    //printf("Value of cmd queue addr is 0x%lx",its.cmd_queue);
 
     err = allocate_lpi_tables();
     if(err)
         return err;
+
+    /*Enable tracker*/
+    // uint32_t *ptr = 0x51a2C000;
+    // *ptr = (uint32_t)0x2;
 
     err = its_cpu_init();
     if(err)
@@ -351,5 +429,16 @@ int its_init(void){
     // ptr++;
     // printf("Value of trkvidr is 0x%x",*ptr);
 
-    printf("ITS initialization finished\n");
+    // printf("ITS initialization finished\n");
+    // printf("ITS initialization finished\n");
+    // printf("ITS initialization finished\n");
+}
+
+uint64_t get_creadr(){
+    return gits->CREADR;
+}
+
+uint64_t get_cqueue(){
+    //return ((its_test.cmd[3] << 24) | (its_test.cmd[2] << 16) | (its_test.cmd[1] << 8) | its_test.cmd[0]);
+    return 0;
 }
